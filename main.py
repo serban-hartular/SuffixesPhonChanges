@@ -1,3 +1,4 @@
+from collections import defaultdict
 
 import pandas as pd
 import conllu_path as cp
@@ -12,21 +13,20 @@ substitution_costs = {
     ('a', 'ă') : 0.1,
 }
 
+def remove_final_vowels(s : str) -> str:
+    while s and s[-1] in 'aeiouăîâ':
+        s = s[:-1]
+    return s
+
 if __name__ == "__main__":
-    nouns = utils.p_load('./nouns_doom1.p')
-    suffix = 'el'
-    _el = [n for n in nouns if n.endswith(suffix)]
-    base_nouns = {}
-    for diminutive in _el:
-        radical = diminutive[:-len(suffix)]
-        if len(radical) < 2:
-            base_nouns[diminutive] = []
-            continue
-        bases_sorted = [(n, str_dist(n, radical, substitution_costs)) for n in nouns if n != diminutive]
-        bases_sorted.sort(key=lambda t : t[1]) # sort by distance
-        score = bases_sorted[0][1]
-        bases_sorted = [b for b in bases_sorted if b[1] == score]
-        base_nouns[diminutive] = bases_sorted
-        print(diminutive, '\t', radical, '\t', bases_sorted)
-
-
+    df = pd.read_csv('./data/diminutives_el.csv', sep='\t', encoding='utf-8')
+    df['Radical_0'] = df.apply(lambda row : remove_final_vowels(row['Sursa']).strip(), axis=1)
+    df['Radical_D'] = df.apply(lambda row : row['Diminutiv'][:-len(row['Sufix'])], axis=1)
+    radical_pairs = df[['Radical_0', 'Radical_D']].to_dict(orient='records')
+    radical_pairs = [(d['Radical_0'], d['Radical_D']) for d in radical_pairs]
+    final_diff = [t for t in radical_pairs if t[0][-1] != t[1][-1]]
+    final_change = defaultdict(list)
+    for t in final_diff:
+        final_change[(t[0][-1], t[1][-1])].append(t)
+    for k, v in final_change.items():
+        print(k, '\t', v)

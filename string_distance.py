@@ -13,12 +13,18 @@ def simple_string_distance(s : str, t : str,
         v1[0] = i + 1
         for j in range(n):
             # // calculating costs for A[i + 1][j + 1]
-            deletionCost = v0[j + 1] + 1
+            # low cost for oa -> o, ea -> o, ia -> ie
+            deletionPenalty = 1
+            if s[i] == 'a' and i > 0 and s[i-1] in ('o', 'e'):
+                deletionPenalty = 0.1
+            deletionCost = v0[j + 1] + deletionPenalty
             insertionCost = v1[j] + 1
             if s[i] == t[j]:
                 substitutionPenalty = 0
             elif (s[i], t[j]) in sub_cost_dict:
                 substitutionPenalty = sub_cost_dict[(s[i], t[j])]
+            elif s[i] == 'a' and t[j] == 'e' and i>0 and s[i-1] == 'i': # ia->ie
+                substitutionPenalty = 0.1
             else:
                 substitutionPenalty = 1
             substitutionCost = v0[j] + substitutionPenalty #v0[j] if s[i] == t[j] else v0[j]+1

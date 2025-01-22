@@ -1,118 +1,88 @@
 import dataclasses
-from typing import List, Callable
 
+from syllable import Syllable, StressTokenPosition, STRESS_TOK, Alphabet
+import itertools
 
-@dataclasses.dataclass
-class Alphabet:
-    vowels : list[str]
-    semi_vowels : list[str]
-    non_vowels : list[str]
-    phon_2_ortho : dict[str, str] = dataclasses.field(default_factory=dict)
-    post_phon2ortho : Callable[[list[str]], list[str]] = None
-    symbols : list[str] = None
-    def __post_init__(self):
-        self.symbols = self.vowels + self.semi_vowels + self.non_vowels
-        for sym in self.symbols:
-            if sym not in self.phon_2_ortho:
-                self.phon_2_ortho[sym] = sym
-
-def ro_k_to_kh(ss :list[str]) -> list[str]:
-    out = list()
-    kg_dict = {'k':'c', 'gg':'g'}
-    for i, s in enumerate(ss):
-        if s in kg_dict:
-            out.append(kg_dict[s])
-            if i < len(ss)-1 and ss[i+1] in ('e', 'i'):
-                out.append('h')
-        else:
-            out.append(s)
-    return out
-
-ro_abc = Alphabet(
-    vowels=['a', 'e', 'i', 'o', 'u', '@', 'a@'],
-    semi_vowels=['j', 'w', 'e@', 'o@'],
-    non_vowels=list('bdfghklmnprstvz') + ['ch', 'sh', 'ts', 'dz', 'zh'],
-    phon_2_ortho={'@':'ă', 'a@':'î', 'j':'i', 'w':'u', 'e@' : 'e', 'o@' : 'o',
-                  'sh':'ș', 'ts':'ț', 'zh':'j',
-                  'ch':'c', 'k' : 'k', 'dz':'g', 'g' : 'gg'},
-    post_phon2ortho = ro_k_to_kh,
-)
-
-Slice = tuple[int, int]
-class SymbolString(List[str]):
-    def __init__(self, src : str|List[str], sep : str = ''):
-        super().__init__(src.split(sep) if isinstance(src, str) and sep else list(src))
-    def slice(self, slice : Slice) -> 'SymbolString':
-        return SymbolString(self[slice[0]:slice[1]+1])
-    def to_string(self, sep : str = ' '):
-        return sep.join(self)
-    def to_ortho(self, abc : Alphabet) -> 'SymbolString':
-        ortho = [abc.phon_2_ortho[sym] for sym in self]
-        if abc.post_phon2ortho is not None:
-            ortho = abc.post_phon2ortho(ortho)
-        return SymbolString(ortho)
-    def __str__(self):
-        return self.to_string()
-    def __repr__(self):
-        return '/'+self.to_string()+'/'
+SYLL_TOK = "-"
 
 @dataclasses.dataclass
-class Syllable:
-    abc : Alphabet
-    phonemes : SymbolString
-    stressed : bool = False
-    initial: bool = False
-    final : bool = False
-    ortho : SymbolString = None #dataclasses.field(default_factory=list)
-    _onset : Slice = (0, 0)
-    _center : Slice = (0, 0)
-    _vowel : int = -1
-    _coda : Slice = (0, 0)
+class Word:
+    syllables : list[Syllable]
+    phonemes : list[str] = dataclasses.field(default_factory=list)
+    ortho : list[str] = dataclasses.field(default_factory=list)
+    meta : dict[str, str|int|bool] = dataclasses.field(default_factory=dict)
+
+    def assign_stress(self, syllable_index : int):
+        if syllable_index < 0:
+            syllable_index += len(self.syllables)
+        if syllable_index >= len(self.syllables):
+            raise Exception('Trying to assign stress to nonexistent syllable %d in %s!' %
+                            (syllable_index, str(self)))
+        for i, syl in enumerate(self.syllables):
+            syl.stressed = (i == syllable_index)
+
+
+    def to_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        d['syllables'] = [syl.to_dict() for syl in self.syllables]
+        return d
+    @staticmethod
+    def from_dict(d : dict) -> 'Word':
+        d['syllables'] = [Syllable.from_dict(syl) for syl in d['syllables']]
+        return Word(**d)
     def __post_init__(self):
-        if self.ortho is None:
-            self.ortho = self.phonemes.to_ortho(self.abc)
-        state = 'onset'
-        for i, sym in enumerate(self.phonemes):
-            if sym not in self.abc.symbols:
-                print('Error! Symbol %s in syllable %s not in alphabet!' % (sym, str(self)))
-                return
-            if state == 'onset':
-                if sym in self.abc.non_vowels:
-                    continue
-                else:
-                    self._onset = (0, i - 1)
-                    state = 'center'
-            if state == 'center':
-                if sym in self.abc.semi_vowels:
-                    continue
-                elif sym in self.abc.vowels:
-                    if self._vowel != -1:
-                        print('Error! Syllable %s has two vowels' % str(self))
-                        return
-                    self._vowel = i
-                    continue
-                else:
-                    self._center = (self._onset[1] + 1, i - 1)
-                    if self._vowel == -1:
-                        print('Error! Syllable %s has no vowel in its center!' % str(self))
-                        return
-                    state = 'coda'
-            if state == 'coda':
-                if sym in self.abc.vowels:
-                    print('Error! Syllable %s has two vowels!' % str(self))
-                    return
-                continue
-        self._coda = (self._center[1] + 1, len(self.phonemes) - 1)
+        if not self.syllables:
+            raise Exception('Empty word!')
+        if not self.phonemes:
+            self.phonemes = list(itertools.chain.from_iterable([s.phonemes for s in self.syllables]))
+        if not self.ortho:
+            self.ortho = list(itertools.chain.from_iterable([s.ortho for s in self.syllables]))
+        stress_count = 0
+        for i, syll in enumerate(self.syllables):
+            if i == 0:
+                syll.initial = True
+            elif syll.initial:
+                print('Warning, non-initial syllable marked as initial')
+                syll.initial = False
+            if i == len(self.syllables)-1:
+                syll.final = True
+            elif syll.final:
+                print('Warning, non-final syllable marked as final')
+                syll.final = False
+            stress_count += int(syll.stressed)
+        if len(self.syllables) > 1 and stress_count != 1:
+            raise Exception('Error, word %s has %d stressed syllables!' % (str(self), stress_count))
+
+    def to_tokens(self, syllable_separators : bool = True,
+                  stress_token_position : StressTokenPosition = StressTokenPosition.BEFORE_SYLLABLE) -> list[str]:
+        syllables = [syl.to_tokens(stress_token_position) + ([SYLL_TOK] if syllable_separators else [])
+                     for syl in self.syllables]
+        tokens = list(itertools.chain.from_iterable(syllables))
+        if syllable_separators:
+            tokens = tokens[:-1]
+        return tokens
+
+    @staticmethod
+    def from_tokens(abc : Alphabet, tok_list : list[str]):
+        syllable_chunks = [list(group) for flag, group in
+                     itertools.groupby(tok_list, lambda s : s == SYLL_TOK) if not flag]
+        syllable_list = []
+        for i, syllable_toks in enumerate(syllable_chunks):
+            stress_flag = False
+            if syllable_toks[0] == STRESS_TOK:
+                stress_flag = True
+                syllable_toks = syllable_toks[1:]
+            syllable = Syllable.from_phonemes(abc, syllable_toks, stressed=stress_flag,
+                                initial=(i == 0), final=(i==len(syllable_chunks)-1))
+            syllable_list.append(syllable)
+        return Word(syllable_list)
+
+    def to_ortho(self, syllable_separators : bool = True, with_stress : bool = True):
+        sep = SYLL_TOK if syllable_separators else ''
+        return sep.join([syl.to_ortho(with_stress) for syl in self.syllables])
+
     def __str__(self):
-        return str(self.phonemes)
+        return self.to_ortho()
+
     def __repr__(self):
         return str(self)
-    def onset(self) -> SymbolString:
-        return self.phonemes.slice(self._onset)
-    def center(self) -> SymbolString:
-        return self.phonemes.slice(self._center)
-    def coda(self) -> SymbolString:
-        return self.phonemes.slice(self._coda)
-    def vowel(self) -> str:
-        return self.phonemes[self._vowel]
-

@@ -31,3 +31,11 @@ def csv_to_word_pairs(filename : str, initial_label : str, final_label) -> list[
     data = data.to_dict(orient='records')
     return [(d[initial_label], d[final_label]) for d in data]
 
+nodiacritics_dict = {
+    'ă':'a', 'î':'i', 'â':'a',
+    'ș':'s', 'ț':'t',
+}
+def to_no_diacritics(s : str) -> str:
+    for k,v in nodiacritics_dict.items():
+        s = s.replace(k, v)
+    return s

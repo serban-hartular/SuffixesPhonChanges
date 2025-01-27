@@ -18,7 +18,11 @@ def simple_string_distance(s : str, t : str,
             if s[i] == 'a' and i > 0 and s[i-1] in ('o', 'e'):
                 deletionPenalty = 0.1
             deletionCost = v0[j + 1] + deletionPenalty
-            insertionCost = v1[j] + 1
+
+            insertionPenalty = 1
+            if t[j] == 'a' and j > 0 and t[j-1] in ('o', 'e'):
+                insertionPenalty = 0.1
+            insertionCost = v1[j] + insertionPenalty
             if s[i] == t[j]:
                 substitutionPenalty = 0
             elif (s[i], t[j]) in sub_cost_dict:

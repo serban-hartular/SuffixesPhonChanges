@@ -60,38 +60,19 @@ def make_two(n : dict) -> (dict, dict):
               zip(copies, keys, forms, stresses, plur)]
     return copies
 
-def syllable_check(r : dict) -> list:
-    r['Silabic'] = r['Silabic'] if r['Silabic'] else r['Silabic Orig']
-    r['Silabic'] = r['Silabic'].replace("'", '"')
-    ortho_check = r['Forma'] == r['Silabic'].replace('-', '').replace('"', '')
-    sylls = r['Silabic'].split('-')
-    stress0 = -1
-    stress_check = True
-    for i in range(len(sylls)):
-        syl = sylls[i]
-        if not syl:
-            return [r['Silabic'], False, False, '']
-        if syl[0] == "'":
-            if stress0 != -1:
-                stress_check = False
-                continue
-            stress0 = i
-            sylls[i] = sylls[i][1:]
-    # where is the stress?
-    stress_char = r['Stres']
-    stress_syl = -1
-    # in what syllable?
-    char_count = 0
-    for i, syl in enumerate(sylls):
-        if stress_char >= char_count and stress_char < char_count + len(syl):
-            stress_syl = i
-            break
-        char_count += len(syl)
-    if stress_syl != stress0:
-        stress_check = False
-    out_form = [('"' if stress_syl==i else '') + syl for i, syl in enumerate(sylls)]
-    out_form = '-'.join(out_form)
-    return [r['Silabic'], ortho_check, stress_check, out_form]
+
+def check_desp(r: dict) -> bool:
+    if r['Desp'] == '': return True
+    desp = r['Desp'].replace('"', '')
+    word = r['out_form'].replace('"', '')
+    i = word.find(desp)
+    if i == -1:
+        return False
+    i2 = word[i+len(desp):].find(desp)
+    if i2 != -1:
+        return False
+    return True
+
 
 def vowel_check(word : str) -> bool:
     sylls = word.split('-')
@@ -103,6 +84,16 @@ def vowel_check(word : str) -> bool:
             continue
         return False
     return True
+
+def check_syllables(word : str, syllable_letter_index : int) -> (str, int):
+    sylls = word.split('-')
+    stressed = [i for i, syl in enumerate(sylls) if '"' in syl]
+    if len(stressed) > 1 or len(stressed) == 0 and len(sylls) > 1:
+        return ('', -1)
+    sylls = [syl.replace('"', '') for syl in sylls]
+    if len(sylls) == 1:
+        return sylls[0], -1
+    stressed_syllable = stressed[0]
 
 
 if __name__ == "__main__":

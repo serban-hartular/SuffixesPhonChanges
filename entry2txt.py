@@ -85,21 +85,34 @@ def vowel_check(word : str) -> bool:
         return False
     return True
 
-def check_syllables(word : str, syllable_letter_index : int) -> (str, int):
+def check_syllables(word : str, stressed_letter_index : int) -> (str, int):
     sylls = word.split('-')
     stressed = [i for i, syl in enumerate(sylls) if '"' in syl]
     if len(stressed) > 1 or len(stressed) == 0 and len(sylls) > 1:
         return ('', -1)
     sylls = [syl.replace('"', '') for syl in sylls]
-    if len(sylls) == 1:
+    if len(sylls) == 1: # mono syllabic
         return sylls[0], -1
     stressed_syllable = stressed[0]
+    word_nosep = word.replace('"', '').replace("-", "")
+    if stressed_letter_index >= len(word_nosep) or word_nosep[stressed_letter_index] not in 'aeiouăîâ':
+        return ('', -1)
+    char_count = 0
+    for i, syl in enumerate(sylls):
+        if stressed_letter_index >= char_count and stressed_letter_index < char_count + len(syl):
+            if i != stressed_syllable:
+                return ('', -1)
+            return ('-'.join([('"' if j == stressed_syllable else '') + _syl for j, _syl in enumerate(sylls)]),
+                    stressed_letter_index - char_count)
+        char_count += len(syl)
+    return ('', -1)
+
+
+
 
 
 if __name__ == "__main__":
-    noun_dict = utils.p_load('./doom_nouns_dict.p')
-
-    nouns_doubled = [n for n in noun_dict.values() if '/' in n['key']]
+    pass
 
     # doom_json = open('./dictionaries/doom.jsonl', 'r', encoding='utf-8').readlines()
     # doom_items = [json.loads(s) for s in doom_json]

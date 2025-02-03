@@ -1,6 +1,8 @@
 import json
+from collections import defaultdict
 
 import lxml
+import pandas as pd
 from lxml import etree
 import re
 
@@ -108,11 +110,99 @@ def check_syllables(word : str, stressed_letter_index : int) -> (str, int):
     return ('', -1)
 
 
+def str_to_symbol_list(s : str) -> list[str]:
+    mult_char_symbols = ['e̯', 'i̯', 'o̯', 'u̯']
+    l = []
+    while s:
+        c_in_multi = False
+        for multi in mult_char_symbols:
+            if s.startswith(multi):
+                l.append(multi)
+                s = s[len(multi):]
+                c_in_multi = True
+                break
+        if not c_in_multi:
+            l.append(s[0])
+            s = s[1:]
+    return l
+
+
+
+def syll_to_phon(word : str, vowel_dict: dict[str, list[str]], stress_vowel_index : int = -1) -> str:
+    dzh = 'ğ'
+    tsch = 'č'
+    if not word or '-' in word and '"' not in word:
+        print('Error ' + word)
+        return None
+    word = word.replace('â', 'î')
+    sylls = word.split('-')
+    phon_sylls = []
+    for si, syl in enumerate(sylls):
+        vowels = re.findall('[aeiouăî]+', syl)
+        if len(vowels)==2 and vowels[1]=='i' and si==len(sylls)-1 and syl[-1]=='i':
+            # short final i
+            syl = syl[:-1] + 'i̯'
+            vowels = vowels[:1]
+        if len(vowels)!=1:
+            print('Error vowels ' + word)
+            return None
+        vowels = vowels[0]
+        phon_vowels = vowel_dict[vowels]
+        if not phon_vowels:
+            print(f'Error center {vowels} not allowed')
+            return None
+        if len(phon_vowels)==1:
+            syl = syl.replace(vowels, phon_vowels[0])
+        elif si==len(sylls)-1 and '"' in syl and syl[-2:]=='iu': # it's 'iu'
+            syl = syl.replace('iu', 'iu̯') # fistichiu
+        else:
+            syl = syl.replace('iu',   'i̯u')
+        if '"' in syl and stress_vowel_index:
+            symbol_list = str_to_symbol_list(syl.replace('"', ''))
+            if symbol_list[stress_vowel_index] not in ('a', 'e', 'i', 'o', 'u', 'ă', 'î'):
+                print('Stress index warning ' + word)
+        phon_sylls.append(syl)
+    word = "-".join(phon_sylls)
+    word = re.sub(r'(c)([ei)])', fr'{tsch}\2', word)
+    word = re.sub(r'(g)([ei)])', fr'{dzh}\2', word)
+    word = re.sub(r'ch?', 'k', word)
+    word = re.sub(r'gh', 'g', word)
+
+    return word
+
+def move_stress(word : str, new_stress_index: int) -> str:
+    sylls = word.split('-')
+    if len(sylls) == 1:
+        return word
+    if new_stress_index < 0 or new_stress_index >= len(sylls):
+        return None
+    sylls = [('"' if i == new_stress_index else '')  + syl.replace('"', '')
+             for i, syl in enumerate(sylls)]
+    return '-'.join(sylls)
+
+def find_stress(word : str, zero_if_single_syllable : bool = True) -> int:
+    sylls = word.split('-')
+    if len(sylls) == 1:
+        return 0 if zero_if_single_syllable else -1
+    stresses = [i for i, syl in enumerate(sylls) if '"' in syl]
+    return stresses[0] if len(stresses) == 1 else -1
+
+def change_pl_stress(r : dict, sing_key_dict : dict[str, int]) -> tuple[str, bool]:
+    if r['Num'] == 'Sing' or r['key'] not in sing_key_dict:
+        return r['Silabic'], False
+    stress0 = find_stress(r['Silabic'])
+    stress1 = sing_key_dict[r['key']]
+    if stress0 == stress1:
+        return r['Silabic'], False
+    return move_stress(r['Silabic'], stress1), True
+
 
 
 
 if __name__ == "__main__":
-    pass
+    df = pd.read_excel('./data/Nons_Phon_Syll5.xlsx')
+    df = df.fillna('')
+
 
     # doom_json = open('./dictionaries/doom.jsonl', 'r', encoding='utf-8').readlines()
     # doom_items = [json.loads(s) for s in doom_json]

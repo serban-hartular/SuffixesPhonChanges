@@ -12,6 +12,8 @@ import pandas as pd
 import utils
 from decision_tree import FeatureDecisionTreeClassifier
 
+from word_transformation import WordTransformation, ChangeSequence, Transition
+
 
 @dataclasses.dataclass
 class Syllable:
@@ -27,7 +29,7 @@ class Syllable:
         self.stressed = '"' in self.text
         self.phon = self.text.replace('"', '')
         self.center = re.findall(r'[aeiouăîâ]+', self.phon)[0]
-        self.open = self.phon.endswith(self.center)
+        self.open = self.phon.endswith(self.center) and self.text.find(self.center) == self.text.rfind(self.center)
         self.null_onset = self.phon.startswith(self.center)
     @staticmethod
     def to_syllables(word : str) -> list['Syllable']:
@@ -71,43 +73,57 @@ class Word(List[Syllable]):
         return stressed[0]
 
 
-def get_root_last_syll(word : Word, ending_changes : dict[str, str] = None) -> str:
+def get_root_last_syll(word : Word, ending_changes : dict[str, str] = None) -> (str, str):
     if ending_changes is None:
-        ending_changes = {'e': '', 'ie': 'i', 'iu': 'i', 'ă': '', 'ău': 'ă'}
+        ending_changes = {'e': '', 'ie': 'i', 'iu': 'i', 'ă': ''}
     final = word[-1]
     if not final.open or final.center not in ending_changes:
-        return str(final)
+        return str(final), ''
+    dropped = final.center[-1]
     final = final.text.replace(final.center, ending_changes[final.center])
-    return final
+    return final, dropped
 
-if __name__ == "__main__":
-    data_df = pd.read_excel('./data/DexDiminutivesSyllabic.xlsx')
-    dim_pairs = data_df.to_dict(orient='records')
-    center_changes = []
-    for d in dim_pairs:
-        dim = d['diminutiv silabe']
-        src = d['sursa silabe']
-        suffix = d['base suffix']
-        dim_sylls = Word.from_string(dim) #Syllable.to_syllables(dim)
-        src_sylls = Word.from_string(src) #Syllable.to_syllables(src)
-        src_final = get_root_last_syll(src_sylls)
-        src_final = re.sub(r'[-"]', '', src_final + suffix)
-        dim_final = str(dim_sylls[len(src_sylls) - 1:])
-        dim_final = re.sub(r'[-"]', '', dim_final)
-        print(dim, src, f'{src_final} > {dim_final}')
+def group_changes(chg_seq : ChangeSequence) -> (ChangeSequence, ChangeSequence, ChangeSequence):
+    new_chg_seq = []
+    skip_next = False
+    input_index = -1
+    for chg in chg_seq:
+        if skip_next:
+            skip_next = False
+            continue
+        if chg.d_in != 'c' and chg.d_out == 'c' and chg.after and (chg.after.d_in, chg.after.d_out) == ('', 'i'): # inserting 'ci'
+            new_chg_seq.append(Transition(chg.d_in, chg.d_out + 'i'))
+            skip_next = True
+            continue
+        if chg.d_in != '': # is not insertion
+            new_chg_seq.append(Transition(chg.d_in, chg.d_out))
+        else: # is insertion1
+            if not new_chg_seq or new_chg_seq[-1].d_in != '': # append insertion
+                new_chg_seq.append(Transition(chg.d_in, chg.d_out))
+            else: # add to insertion
+                new_chg_seq[-1].d_out += chg.d_out
+        skip_next = False
 
-        # a_is_stressed = src_sylls.get_stressed().center == 'a'
-        # for i, (src_syl, dim_syl) in enumerate(zip(src_sylls, dim_sylls)):
-    #         center_chg = {'cSRC':src_syl.center, 'cDIM':dim_syl.center,
-    #                       'change':src_syl.center != dim_syl.center,
-    #                       'final': src_syl.final, 'initial': src_syl.initial,
-    #                       'stressed':src_syl.stressed,
-    #                       'open':src_syl.open, 'null-onset':src_syl.null_onset,
-    #                       'word_final': src_syl.final and src_syl.open,
-    #                       'word_initial': src_syl.initial and src_syl.null_onset,
-    #                       'a_is_stressed' : a_is_stressed,
-    #                       'SRC':src, 'DIM':dim, 'syl_nr' : i, 'suffix':suffix}
-    #         # center_chg = {k:int(v) if isinstance(v, bool) else v for k,v in center_chg.items()}
-    #         center_changes.append(center_chg)
-    # center_chg_df = pd.DataFrame(center_changes)
-    # center_chg_df.to_excel('./data/center_chg_df.xlsx')
+    for i, chg in enumerate(new_chg_seq):
+        if i > 0:
+            chg.before = new_chg_seq[i-1]
+        if i < len(new_chg_seq)-1:
+            chg.after = new_chg_seq[i+1]
+
+    return new_chg_seq
+
+def extract_edits(chg_seq : ChangeSequence, last_input_index : int = -1) -> (ChangeSequence, ChangeSequence, ChangeSequence):
+    edit_lists = [[], [], []]
+    input_index = -1
+    for chg in chg_seq:
+        if chg.d_in != '' or input_index >= last_input_index: # not insertion, or past end
+            input_index += 1
+        destination_index = 0 if input_index < last_input_index else 1 if input_index == last_input_index else 2
+        destination = edit_lists[destination_index]
+        if chg.d_in == chg.d_out: # no change
+            continue
+        destination.append(Transition(chg.d_in, chg.d_out,
+                                chg.before.d_in if chg.before is not None else '',
+                                chg.after.d_in if chg.after is not None else ''))
+    return edit_lists
+

@@ -1,6 +1,7 @@
 import dataclasses
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Callable
+
 
 def simple_string_distance(s : str, t : str) -> int:
     m = len(s)
@@ -70,27 +71,27 @@ class Operation:
 @dataclasses.dataclass(frozen=True)
 class Modification:
     op : Operation = dataclasses.field(default_factory=Operation.Nop)
-    score : int = 0
+    cost : float = 0
     from_pos : Position = (-1, -1)
     def __str__(self):
         return '(%s -> %s)' % (str(self.from_pos), str(self.op))
     def __repr__(self):
         return str(self)
     def __eq__(self, other):
-        return self.op == other.op and self.score == other.score
+        return self.op == other.op and self.cost == other.cost
 
 
 @dataclasses.dataclass
 class MatrixCell:
     modifications : List[Modification] = dataclasses.field(default_factory=list)
-    score : int = 0
+    cost : float = 0
     def __post_init__(self):
         if self.modifications:
-            if min([m.score for m in self.modifications]) != max([m.score for m in self.modifications]):
-                raise Exception('Unequal scores in cell!')
-            self.score = self.modifications[0].score
+            if min([m.cost for m in self.modifications]) != max([m.cost for m in self.modifications]):
+                raise Exception('Unequal costs in cell!')
+            self.cost = self.modifications[0].cost
     def __str__(self):
-        return '%d %s' % (self.score, str(self.modifications))
+        return '%d %s' % (self.cost, str(self.modifications))
     def __repr__(self):
         return str(self)
 
@@ -117,7 +118,10 @@ def add_BOS_EOS(s : str | List[str]) -> str | List[str]:
         return BOS + s + EOS
     return [BOS] + s + [EOS]
 
-def distance(w1 : str|List[str], w2 : str|List[str]) -> ModMatrix:
+def distance(w1 : str|List[str], w2 : str|List[str], cost_fn : Callable[[str, str], float] = None) -> ModMatrix:
+    if cost_fn is None:
+        cost_fn = lambda i, o : 1
+
     w1, w2 = add_BOS_EOS(w1), add_BOS_EOS(w2)
     rows = len(w1)
     cols = len(w2)
@@ -132,17 +136,18 @@ def distance(w1 : str|List[str], w2 : str|List[str]) -> ModMatrix:
     # populate matrix
     for j in range(1, cols):
         for i in range(1, rows):
-            substitution_cost = 0 if w1[i] == w2[j] else 1
+            substitution_cost = 0 if w1[i] == w2[j] else cost_fn(w1[i], w2[j])
+            del_cost = cost_fn(w1[i], '')
+            ins_cost = cost_fn('', w2[j])
             # substition_string = '%s->%s' % (w1[i], w2[j]) if substitution_cost else 'nop'
             substition_op = Operation.Sub(w1[i], w2[j]) if substitution_cost else Operation.Nop(w1[i])
-            options = [#Modification('del %s' % w1[i], matrix[i - 1][j].score + 1, (i - 1, j)),  # deletion
-                       #Modification('ins %s' % w2[j], matrix[i][j - 1].score + 1, (i, j - 1)),  # insertion
-                       Modification(Operation.Del(w1[i]), matrix[i - 1][j].score + 1, (i - 1, j)),  # deletion
-                       Modification(Operation.Ins(w2[j]), matrix[i][j - 1].score + 1, (i, j - 1)),  # insertion
-                       Modification(substition_op, matrix[i - 1][j - 1].score + substitution_cost, (i - 1, j - 1))  # substitution
+            options = [
+                       Modification(Operation.Del(w1[i]), matrix[i - 1][j].cost + del_cost, (i - 1, j)),  # deletion
+                       Modification(Operation.Ins(w2[j]), matrix[i][j - 1].cost + ins_cost, (i, j - 1)),  # insertion
+                       Modification(substition_op, matrix[i - 1][j - 1].cost + substitution_cost, (i - 1, j - 1))  # substitution
                        ]
-            min_score = min([m.score for m in options])
-            options = [m for m in options if m.score == min_score]
+            min_cost = min([m.cost for m in options])
+            options = [m for m in options if m.cost == min_cost]
             matrix[i][j] = MatrixCell(options)
     return matrix
 
@@ -152,13 +157,16 @@ class Transition:
     d_out : str
     before : 'Transition' = None
     after : 'Transition' = None
+    i_in : int = None
+    i_out : int = None
+    cost : int = 0
     @staticmethod
     def _to_output(s : str):
         return s if s else EMPTY
     def __hash__(self):
         return hash((self.d_in, self.d_out))
     def __str__(self):
-        return '%s->%s' % (Transition._to_output(self.d_in), Transition._to_output(self.d_out))
+        return '%s > %s' % (Transition._to_output(self.d_in), Transition._to_output(self.d_out))
     def __repr__(self):
         return str(self)
     def __eq__(self, other):
@@ -168,7 +176,19 @@ class Transition:
 
 
 ChangeSequence = List[Transition]
-def _change_sequence_score(c_seq : ChangeSequence) -> int:
+
+def assign_indices(c_seq : ChangeSequence):
+    i_in = 0
+    i_out = 0
+    for chg in c_seq:
+        chg.i_in = i_in
+        chg.i_out = i_out
+        if chg.d_in:
+            i_in += 1
+        if chg.d_out:
+            i_out += 1
+
+def _change_sequence_cost(c_seq : ChangeSequence) -> int:
     c_seq = [c for c in c_seq if c]
     return len(set(c_seq))
 
@@ -181,21 +201,25 @@ def find_change_sequences(matrix : ModMatrix, pos : Position = None) -> List[Cha
     mod_paths : List[ChangeSequence] = []
     for mod in matrix.at(pos).modifications:
         new_paths = find_change_sequences(matrix, mod.from_pos)
+        if new_paths is None:
+            continue
         for path in new_paths:
             # path.append((pos[0], mod))
-            path.append(Transition(mod.op.d_in, mod.op.d_out))
+            path.append(Transition(d_in=mod.op.d_in, d_out=mod.op.d_out, cost=mod.cost))
         mod_paths.extend(new_paths)
     return mod_paths
 
 class WordTransformation:
-    def __init__(self, initial : str, final : str):
+    def __init__(self, initial : str, final : str, cost_fn : Callable[[str, str], float] = None):
         self.initial = initial
         self.final = final
         self.min_changes = simple_string_distance(self.initial, self.final)
         self.change_sequences = None
+        if cost_fn is not None:
+            self.compute_change_sequences(cost_fn)
 
-    def compute_change_sequences(self):
-        matrix = distance(self.initial, self.final)
+    def compute_change_sequences(self, cost_fn : Callable[[str, str], float] = None):
+        matrix = distance(self.initial, self.final, cost_fn)
         self.change_sequences = find_change_sequences(matrix)
         for change_seq in self.change_sequences: # assign befores and afters
             for i, change in enumerate(change_seq):

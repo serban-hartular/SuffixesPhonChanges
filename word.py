@@ -1,88 +1,141 @@
 import dataclasses
+import re
+from collections import defaultdict
 
-from syllable import Syllable, StressTokenPosition, STRESS_TOK, Alphabet
-import itertools
 
-SYLL_TOK = "-"
+def string_to_list(s : str, multi_char_tokens : set[str]) -> list[str]:
+    multi_char_dict = defaultdict(list)
+    for tok in multi_char_tokens:
+        multi_char_dict[len(tok)].append(tok)
+    lens = list(set(multi_char_dict.keys()))
+    lens.sort(reverse=True)
+    tok_list = []
+    while s:
+        is_multi = False
+        for tok_len in lens:
+            if s[:tok_len] in multi_char_dict[tok_len]:
+                is_multi = True
+                break
+        if not is_multi:
+            tok_len = 1
+        tok_list.append(s[:tok_len])
+        s = s[tok_len:]
+    return tok_list
 
 @dataclasses.dataclass
-class Word:
-    syllables : list[Syllable]
-    phonemes : list[str] = dataclasses.field(default_factory=list)
-    ortho : list[str] = dataclasses.field(default_factory=list)
-    meta : dict[str, str|int|bool] = dataclasses.field(default_factory=dict)
+class Syllable:
+    onset : str
+    center : str
+    coda : str
+    stressed : bool = False
 
-    def assign_stress(self, syllable_index : int):
-        if syllable_index < 0:
-            syllable_index += len(self.syllables)
-        if syllable_index >= len(self.syllables):
-            raise Exception('Trying to assign stress to nonexistent syllable %d in %s!' %
-                            (syllable_index, str(self)))
-        for i, syl in enumerate(self.syllables):
-            syl.stressed = (i == syllable_index)
+    def is_open(self) -> bool:
+        return not self.coda
+    def no_onset(self) -> bool:
+        return not self.onset
 
+    def to_string(self) -> str:
+        return self.onset + self.center + self.coda
 
-    def to_dict(self) -> dict:
-        d = dataclasses.asdict(self)
-        d['syllables'] = [syl.to_dict() for syl in self.syllables]
-        return d
-    @staticmethod
-    def from_dict(d : dict) -> 'Word':
-        d['syllables'] = [Syllable.from_dict(syl) for syl in d['syllables']]
-        return Word(**d)
-    def __post_init__(self):
-        if not self.syllables:
-            raise Exception('Empty word!')
-        if not self.phonemes:
-            self.phonemes = list(itertools.chain.from_iterable([s.phonemes for s in self.syllables]))
-        if not self.ortho:
-            self.ortho = list(itertools.chain.from_iterable([s.ortho for s in self.syllables]))
-        stress_count = 0
-        for i, syll in enumerate(self.syllables):
-            if i == 0:
-                syll.initial = True
-            elif syll.initial:
-                print('Warning, non-initial syllable marked as initial')
-                syll.initial = False
-            if i == len(self.syllables)-1:
-                syll.final = True
-            elif syll.final:
-                print('Warning, non-final syllable marked as final')
-                syll.final = False
-            stress_count += int(syll.stressed)
-        if len(self.syllables) > 1 and stress_count != 1:
-            raise Exception('Error, word %s has %d stressed syllables!' % (str(self), stress_count))
+    def __getitem__(self, item):
+        return self.to_string()[item]
 
-    def to_tokens(self, syllable_separators : bool = True,
-                  stress_token_position : StressTokenPosition = StressTokenPosition.BEFORE_SYLLABLE) -> list[str]:
-        syllables = [syl.to_tokens(stress_token_position) + ([SYLL_TOK] if syllable_separators else [])
-                     for syl in self.syllables]
-        tokens = list(itertools.chain.from_iterable(syllables))
-        if syllable_separators:
-            tokens = tokens[:-1]
-        return tokens
+    def __contains__(self, item):
+        return item in self.to_string()
+
+    def __copy__(self):
+        return Syllable(**dataclasses.asdict(self))
 
     @staticmethod
-    def from_tokens(abc : Alphabet, tok_list : list[str]):
-        syllable_chunks = [list(group) for flag, group in
-                     itertools.groupby(tok_list, lambda s : s == SYLL_TOK) if not flag]
-        syllable_list = []
-        for i, syllable_toks in enumerate(syllable_chunks):
-            stress_flag = False
-            if syllable_toks[0] == STRESS_TOK:
-                stress_flag = True
-                syllable_toks = syllable_toks[1:]
-            syllable = Syllable.from_phonemes(abc, syllable_toks, stressed=stress_flag,
-                                initial=(i == 0), final=(i==len(syllable_chunks)-1))
-            syllable_list.append(syllable)
-        return Word(syllable_list)
+    def from_string(src : str, center_chars : set[str],
+                    **kwargs) -> 'Syllable':
+        m = re.search(rf'[{"".join(center_chars)}]+', src)
+        if not m:
+            raise Exception(f"Syllable {src} has no center.")
+        onset = src[:m.start()]
+        center = src[m.start():m.end()]
+        coda = src[m.end():]
+        d = {'onset':onset, 'center':center, 'coda':coda}
+        d.update({k:bool(kwargs.get(k)) for k in ('stressed',)})
+        return Syllable(**d)
 
-    def to_ortho(self, syllable_separators : bool = True, with_stress : bool = True):
-        sep = SYLL_TOK if syllable_separators else ''
-        return sep.join([syl.to_ortho(with_stress) for syl in self.syllables])
+@dataclasses.dataclass
+class Sound:
+    symbol : str
+    word_index : int
+    syllable_index : int
+    syllable_part : str
+    first_in_syllable : bool
+    last_in_syllable : bool
+    last_in_word : bool
+    stressed_syllable : bool
+    open_syllable : bool
+    no_onset_syllable : bool
+    final_syllable : bool
+    is_center : bool
 
     def __str__(self):
-        return self.to_ortho()
+        return self.symbol
 
     def __repr__(self):
         return str(self)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+class Word(list[Sound]):
+    def __init__(self, l : list[Sound]):
+        super().__init__(l)
+        if not l:
+            raise Exception('Empty word!')
+        l[-1].last_in_word = True
+
+    def __str__(self):
+        return ''.join([str(ph) for ph in self])
+
+    def __repr__(self):
+        return repr(str(self))
+
+    def symbol_list(self) -> list[str]:
+        return [ph.symbol for ph in self]
+    @staticmethod
+    def from_syllables(sylls : list[Syllable], mult_char_toks : set[str] = None) -> 'Word':
+        sound_list = []
+        phon_i = 0
+        for s_i, syl in enumerate(sylls):
+            syl_len = len(syl.to_string())
+            index_in_syllable = 0
+            for part_name, part in zip(['onset', 'center', 'coda'], [syl.onset, syl.center, syl.coda]):
+                if mult_char_toks:
+                    part = string_to_list(part, mult_char_toks)
+                for ph in part:
+                    sound = Sound(symbol=ph, word_index=phon_i, syllable_index=s_i,
+                                  syllable_part=part_name,
+                                  first_in_syllable=index_in_syllable==0,
+                                  last_in_syllable=index_in_syllable==syl_len-1,
+                                  last_in_word=False, # do this at the end
+                                  stressed_syllable=syl.stressed,
+                                  open_syllable=syl.is_open(),
+                                  no_onset_syllable=syl.no_onset(),
+                                  final_syllable=s_i==len(sylls)-1,
+                                  is_center= part_name=='center' and len(part)==1)
+                    sound_list.append(sound)
+                    phon_i += 1
+                    index_in_syllable += 1
+        return Word(sound_list)
+
+    @staticmethod
+    def from_string(src : str, center_chars : set[str], mult_char_toks : set[str] = None,
+                    **kwargs) -> 'Word':
+        syl_split_token = kwargs.get('syl_split_token') if kwargs.get('syl_split_token') else '-'
+        stress_token = kwargs.get('stress_token') if kwargs.get('stress_token') else '"'
+
+        syl_strings = src.split(syl_split_token)
+        syl_list = []
+        for syl_str in syl_strings:
+            is_stressed = stress_token in syl_str
+            syl_str = syl_str.replace(stress_token, '')
+            syl = Syllable.from_string(syl_str, center_chars)
+            syl.stressed = is_stressed
+            syl_list.append(syl)
+        return Word.from_syllables(syl_list, mult_char_toks)

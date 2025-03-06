@@ -1,10 +1,18 @@
 import dataclasses
 import itertools
+import math
 
 from collections import Counter
 from typing import ClassVar, Callable, Any
 
 import pandas as pd
+
+def population_to_percentages(pop_list : list) -> list[float]:
+    if not pop_list:
+        return []
+    c = Counter(pop_list)
+    c_sum = sum(c.values())
+    return [v / c_sum for v in c.values()]
 
 def pop_max(pop_list : list) -> float:
     pop_list = list(pop_list)
@@ -14,6 +22,10 @@ def pop_max(pop_list : list) -> float:
     c_sum = sum(c.values())
     return max([n for n in c.values()]) / c_sum
 
+def pop_entropy(prob_list : list) -> float:
+    if not prob_list:
+        return 0.0
+    return -sum([p * math.log2(p) for p in prob_list])
 
 def condition2str(feature : str, condition : bool, value : Any) -> str:
     if isinstance(value, bool):
@@ -26,61 +38,67 @@ class FeatureDecisionTree:
     value : str
     children : dict[bool, 'FeatureDecisionTree'] = dataclasses.field(default_factory=dict)
     outcome_probabilities : dict[Any, float] = None
-    OUTCOMES : ClassVar[str] = '*OUTCOMES*'
     depth : int = 0
+    score : float = None
 
     def is_leaf(self) -> bool:
         return self.feature is None
     def __getitem__(self, item):
-        if not self.children:
-            return None
         return self.children[item]
     def __str__(self):
+        if self.value is None:
+            return str(self.outcome_probabilities)
+        if self.value is True:
+            return f'{self.feature}, {str(self.outcome_probabilities)}'
         return f'{self.feature}=={str(self.value)}, {str(self.outcome_probabilities)}'
 
     def __repr__(self):
         return str(self)
 
     @staticmethod
-    def from_dataset(df : pd.DataFrame, population_metric : Callable[[list], float] = None,
+    def from_dataset(df : pd.DataFrame, outcome_column : str, population_metric : Callable[[list], float] = None,
                      **kwargs) \
             -> 'FeatureDecisionTree':
         depth = kwargs.get('depth') if kwargs.get('depth') else 0
         max_depth = kwargs.get('max_depth')
-        if max_depth is not None and depth > max_depth:
-            return None
         if population_metric is None:
-            population_metric = pop_max
-        OUTCOMES = FeatureDecisionTree.OUTCOMES
-        # if OUTCOMES not in df.columns:
-        #     raise Exception('Outcomes column "%s" not in dataframe' % OUTCOMES)
-        feature_dict = {k:set(df[k]) for k in df.columns if k != OUTCOMES}
-        y_population = Counter(df[OUTCOMES])
+            population_metric = pop_entropy
+
+        if outcome_column not in df.columns:
+            raise Exception('Outcomes column "%s" not in dataframe' % outcome_column)
+        feature_dict = {k:set(df[k]) for k in df.columns if k != outcome_column}
+        y_population = Counter(df[outcome_column])
         y_sum = sum(y_population.values())
         y_probabilities = {k:v/y_sum for k,v in y_population.items()}
-        if len(y_probabilities) == 1: # is leaf
-            return FeatureDecisionTree(feature=None, value=None, children=None,
-                                       outcome_probabilities=y_probabilities, depth=depth)
+        current_score = population_metric(y_probabilities.values())
+        node = FeatureDecisionTree(feature=None, value=None, outcome_probabilities=y_probabilities,
+                                   depth=depth, score=current_score)
+        if max_depth is not None and depth >= max_depth:
+            return node
         # find feature by which to split
-        max_score = -1
-        max_feature, max_value = None, None
+        best_score = current_score
+        best_feature, best_value = None, None
+        best_df_true, best_df_false = None, None
         for feature in feature_dict:
             if len(feature_dict[feature]) < 2:
                 continue
             for value in feature_dict[feature]:
                 df_true, df_false = df[df[feature]==value], df[~(df[feature]==value)]
-                score = max([population_metric(_df[OUTCOMES]) for _df in (df_true, df_false)])
-                if score > max_score:
-                    max_score = score
-                    max_feature, max_value = feature, value
-
-        node = FeatureDecisionTree(feature=max_feature, value=max_value,
-                                   outcome_probabilities=y_probabilities)
-
-        if not node.is_leaf() and max_depth is None or depth < max_depth:
-            df_true, df_false = df[df[max_feature] == max_value], df[~(df[max_feature] == max_value)]
-            for k, _df in zip((True, False), (df_true, df_false)):
-                node.children[k] = FeatureDecisionTree.from_dataset(_df, population_metric, depth=depth+1)
+                distributions = [population_to_percentages(split_df[outcome_column].to_list())
+                                 for split_df in (df_true, df_false)]
+                score = sum([population_metric(d) for d in distributions]) / 2
+                if score < best_score:
+                    best_score = score
+                    best_feature, best_value = feature, value
+                    best_df_true, best_df_false = df_true, df_false
+        if best_score < current_score: # we have a split
+            node.feature, node.value = best_feature, best_value
+            if isinstance(node.value, bool) and node.value is False: # none of this A==False stuff
+                node.value = True
+                best_df_true, best_df_false = best_df_false, best_df_true
+            for k, _df in zip((True, False), (best_df_true, best_df_false)):
+                node.children[k] = FeatureDecisionTree.from_dataset(_df, outcome_column,
+                                        population_metric, depth=depth+1, max_depth=max_depth)
 
         return node
 
@@ -101,6 +119,7 @@ class FeatureDecisionTree:
         return outcomes
 
 class FeatureDecisionTreeClassifier:
+    OUTCOMES = '*OUTCOMES*'
     def __init__(self):
         self.tree : FeatureDecisionTree = None
         self.features : list[str] = None
@@ -108,6 +127,7 @@ class FeatureDecisionTreeClassifier:
 
     def fit(self, X : pd.DataFrame|list[list], y : list, **kwargs) -> 'FeatureDecisionTreeClassifier':
         features = kwargs.get('features')
+        max_depth = kwargs.get('max_depth')
         population_metric = kwargs.get('population_metric')
         if len(X) != len(y):
             raise Exception('Length of X not equal to length of y.')
@@ -129,12 +149,13 @@ class FeatureDecisionTreeClassifier:
             X = pd.DataFrame(X, columns=features)
         if None in features:
             raise Exception('Features cannot contain None')
-        if FeatureDecisionTree.OUTCOMES in features:
-            raise Exception('Features cannot contain ' + FeatureDecisionTree.OUTCOMES)
+        if FeatureDecisionTreeClassifier.OUTCOMES in features:
+            raise Exception('Features cannot contain ' + FeatureDecisionTreeClassifier.OUTCOMES)
         self.features = features
         df = pd.DataFrame(X)
-        df[FeatureDecisionTree.OUTCOMES] = y
-        self.tree = FeatureDecisionTree.from_dataset(df, population_metric)
+        df[FeatureDecisionTreeClassifier.OUTCOMES] = y
+        self.tree = FeatureDecisionTree.from_dataset(df, FeatureDecisionTreeClassifier.OUTCOMES,
+                                                     population_metric, max_depth=max_depth)
         self.outcomes = list(set(y))
         return self
 
@@ -172,15 +193,15 @@ class FeatureDecisionTreeClassifier:
 
 if __name__ == "__main__":
     df = pd.DataFrame(list(itertools.product(*([(False,True)]*3))), columns=list('ABC'))
-    df[FeatureDecisionTree.OUTCOMES] = df.apply(lambda r: bool((r['A'] or r['B']) and not r['C']), axis=1)
-    tree = FeatureDecisionTree.from_dataset(df)
+    df['f'] = df.apply(lambda r: '1' if ((r['A'] or r['B']) and not r['C']) else '0', axis=1)
+    tree = FeatureDecisionTree.from_dataset(df, 'f')
 
     outcomes = tree.get_outcomes()
     for o in outcomes:
         print(o[0], [condition2str(*i) for i in o[1]])
 
     dt = FeatureDecisionTreeClassifier()
-    dt.fit(df[['A', 'B', 'C']], df['*OUTCOMES*'])
+    dt.fit(df[['A', 'B', 'C']], df['f'])
     print(dt.predict_population([[True, True, True]]))
     print(dt.predict_proba([[True, True, True]]))
     print(dt.predict([[True, True, True]]))
